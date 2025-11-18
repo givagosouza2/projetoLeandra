@@ -61,8 +61,8 @@ if arq_acc is not None and arq_gyro is not None:
         st.write(f"*Fs giroscópio estimado:* {fs_gyro:.2f} Hz")
 
         # ====== Calcular norma ======
-        df_acc["Norma_raw"] = np.sqrt(df_acc["X"]*2 + df_acc["Y"]2 + df_acc["Z"]*2)
-        df_gyro["Norma_raw"] = np.sqrt(df_gyro["X"]*2 + df_gyro["Y"]2 + df_gyro["Z"]*2)
+        df_acc["Norma_raw"] = np.sqrt(df_acc["X"]**2 + df_acc["Y"]**2 + df_acc["Z"]**2)
+        df_gyro["Norma_raw"] = np.sqrt(df_gyro["X"]**2 + df_gyro["Y"]**2 + df_gyro["Z"]**2)
 
         # ====== Filtrar ======
         df_acc["Norma"] = lowpass_filter(df_acc["Norma_raw"], fs_acc)
