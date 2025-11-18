@@ -54,8 +54,8 @@ if arq_acc is not None and arq_gyro is not None:
         # ====== Estimar Fs ======
         dt_acc = np.diff(df_acc["Tempo"]).mean()
         dt_gyro = np.diff(df_gyro["Tempo"]).mean()
-        fs_acc = 1 / dt_acc
-        fs_gyro = 1 / dt_gyro
+        fs_acc = 1000 / dt_acc
+        fs_gyro = 1000 / dt_gyro
 
         st.write(f"*Fs acelerômetro estimado:* {fs_acc:.2f} Hz")
         st.write(f"*Fs giroscópio estimado:* {fs_gyro:.2f} Hz")
