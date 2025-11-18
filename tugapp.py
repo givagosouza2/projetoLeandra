@@ -38,8 +38,8 @@ if arq_acc is not None and arq_gyro is not None:
         df_gyro = carregar_dados(arq_gyro)
 
         # Calcula norma |v| = sqrt(x² + y² + z²)
-        df_acc["Norma"] = np.sqrt(df_acc["X"]*2 + df_acc["Y"]2 + df_acc["Z"]*2)
-        df_gyro["Norma"] = np.sqrt(df_gyro["X"]*2 + df_gyro["Y"]2 + df_gyro["Z"]*2)
+        df_acc["Norma"] = np.sqrt(df_acc["X"]**2 + df_acc["Y"]**2 + df_acc["Z"]**2)
+        df_gyro["Norma"] = np.sqrt(df_gyro["X"]**2 + df_gyro["Y"]**2 + df_gyro["Z"]**2)
 
         st.subheader("Prévia dos dados")
         st.write("Acelerômetro:")
