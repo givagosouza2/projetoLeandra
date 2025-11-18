@@ -213,8 +213,3 @@ if arq_acc is not None and arq_gyro is not None:
 
 else:
     st.info("Faça o upload dos dois arquivos para ver os gráficos e a detecção do início e fim do movimento.")
-
-
-
-                    
-                           
