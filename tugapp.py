@@ -6,7 +6,7 @@ from scipy.signal import butter, filtfilt
 from sklearn.cluster import KMeans  # <= K-Means para discretizar os estados
 
 st.set_page_config(page_title="Normas Acc & Gyro", page_icon="📱", layout="centered")
-st.title("📱 Normas do Acelerômetro e Giroscópio (com Filtro 2 Hz e Detecção de Início de Movimento)")
+st.title("📱 Normas do Acelerômetro e Giroscópio (Filtro 2 Hz + Início e Fim do Movimento)")
 
 # -------------------------
 # Função de carregamento
@@ -35,7 +35,7 @@ def lowpass_filter(series, fs, cutoff=2, order=4):
     return filtfilt(b, a, series)
 
 # -------------------------
-# Detecção de transição (cadeia de estados)
+# Detecção de início (cadeia de estados)
 # -------------------------
 def detectar_inicio_movimento(labels, base_class=0, min_run=5):
     """
@@ -54,6 +54,33 @@ def detectar_inicio_movimento(labels, base_class=0, min_run=5):
 
         if np.all(bloco1 == base_class) and np.all(bloco2 > base_class):
             return i + min_run  # primeiro índice da nova classe
+    return None
+
+# -------------------------
+# Detecção de fim (cadeia de estados, varrendo de trás pra frente)
+# -------------------------
+def detectar_fim_movimento(labels, base_class=0, min_run=5):
+    """
+    Encontra o último índice em que ocorre:
+      [classe > base_class]*min_run seguido de [base_class]*min_run,
+    varrendo a série de trás pra frente.
+
+    Retorna o índice do primeiro elemento da sequência de base_class (fim do movimento),
+    ou None se não encontrar.
+    """
+    labels = np.asarray(labels)
+    n = len(labels)
+    janela = 2 * min_run
+
+    # começa do final e anda para trás
+    for i in range(n - janela, -1, -1):
+        bloco1 = labels[i : i + min_run]
+        bloco2 = labels[i + min_run : i + janela]
+
+        # movimento -> repouso
+        if np.all(bloco1 > base_class) and np.all(bloco2 == base_class):
+            return i + min_run  # primeiro índice da sequência em repouso
+
     return None
 
 # -------------------------
@@ -122,15 +149,24 @@ if arq_acc is not None and arq_gyro is not None:
 
         df_gyro["Classe"] = labels
 
-        # Detectar início de movimento (transição da classe 0 para qualquer > 0)
+        # ====== Detectar início e fim do movimento ======
         idx_inicio = detectar_inicio_movimento(df_gyro["Classe"], base_class=0, min_run=min_run)
+        idx_fim = detectar_fim_movimento(df_gyro["Classe"], base_class=0, min_run=min_run)
+
+        tempo_inicio = None
+        tempo_fim = None
 
         if idx_inicio is not None:
             tempo_inicio = df_gyro["Tempo"].iloc[idx_inicio]
             st.success(f"Início de movimento detectado em ~ *t = {tempo_inicio:.2f}* (unidades do seu eixo Tempo).")
         else:
-            tempo_inicio = None
-            st.warning("Nenhuma transição estável (classe 0 → classe > 0) com as condições definidas foi encontrada.")
+            st.warning("Nenhuma transição estável (classe 0 → classe > 0) com as condições definidas foi encontrada para o INÍCIO.")
+
+        if idx_fim is not None:
+            tempo_fim = df_gyro["Tempo"].iloc[idx_fim]
+            st.success(f"Fim de movimento detectado em ~ *t = {tempo_fim:.2f}* (unidades do seu eixo Tempo).")
+        else:
+            st.warning("Nenhuma transição estável (classe > 0 → classe 0) com as condições definidas foi encontrada para o FIM.")
 
         # ====== Plot ======
         fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=False)
@@ -146,9 +182,19 @@ if arq_acc is not None and arq_gyro is not None:
         axes[1].plot(df_gyro["Tempo"], df_gyro["Norma_raw"], alpha=0.3, label="Bruto")
         axes[1].plot(df_gyro["Tempo"], df_gyro["Norma"], linewidth=2, label="Filtrado (2 Hz)")
 
-        # Se achou o início, desenha linha vertical
+        # Marcar início
         if tempo_inicio is not None:
-            axes[1].axvline(tempo_inicio, linestyle="--", linewidth=2, label="Início do movimento (Markov+K-Means)")
+            axes[1].axvline(tempo_inicio, linestyle="--", linewidth=2,
+                            label="Início do movimento (Markov+K-Means)")
+
+        # Marcar fim
+        if tempo_fim is not None:
+            axes[1].axvline(tempo_fim, linestyle="--", linewidth=2,
+                            label="Fim do movimento (Markov+K-Means)")
+
+        # Sombrear janela de movimento, se fizer sentido
+        if (tempo_inicio is not None) and (tempo_fim is not None) and (tempo_fim > tempo_inicio):
+            axes[1].axvspan(tempo_inicio, tempo_fim, alpha=0.15, label="Janela de movimento")
 
         axes[1].set_ylabel("‖ω‖")
         axes[1].set_xlabel("Tempo")
@@ -166,7 +212,8 @@ if arq_acc is not None and arq_gyro is not None:
         st.error(f"Erro ao processar arquivos: {e}")
 
 else:
-    st.info("Faça o upload dos dois arquivos para ver os gráficos e a detecção do início de movimento.")
+    st.info("Faça o upload dos dois arquivos para ver os gráficos e a detecção do início e fim do movimento.")
+
 
 
                     
