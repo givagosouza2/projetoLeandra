@@ -6,7 +6,7 @@ from scipy.signal import butter, filtfilt, detrend
 from sklearn.cluster import KMeans  # <= K-Means para discretizar os estados
 
 st.set_page_config(page_title="Normas Acc & Gyro", page_icon="📱", layout="centered")
-st.title("📱 Normas do Acelerômetro e Giroscópio (Filtro 2 Hz + Detrend + Início e Fim do Movimento)")
+st.title("📱 Normas do Acelerômetro e Giroscópio (100 Hz + Detrend + Filtro 2 Hz + Início/Fim do Movimento)")
 
 # -------------------------
 # Função de carregamento
@@ -33,6 +33,65 @@ def lowpass_filter(series, fs, cutoff=2, order=4):
     normal_cutoff = cutoff / nyq
     b, a = butter(order, normal_cutoff, btype='low', analog=False)
     return filtfilt(b, a, series)
+
+# -------------------------
+# Pré-processamento: interpola para 100 Hz, detrend, filtra, norma
+# -------------------------
+def preprocess_sensor(df, target_fs=100, cutoff=2):
+    """
+    df: DataFrame com colunas ["Tempo", "X", "Y", "Z"]
+    Retorna df_proc com:
+        Tempo (s, interpolado a 100 Hz),
+        X_filt, Y_filt, Z_filt,
+        Norma (a partir dos eixos filtrados),
+        Norma_raw_interp (norma dos eixos interpolados sem filtro).
+    """
+
+    # Vetor de tempo original
+    t_orig = df["Tempo"].values
+    dt_orig = np.diff(t_orig).mean()
+
+    # Heurística simples: se dt > 2, assumo Tempo em ms e converto para s
+    if dt_orig > 2:  # algo do tipo 10, 20 ms...
+        t_s = t_orig / 1000.0
+    else:
+        t_s = t_orig.astype(float)
+
+    # Normaliza para começar em 0 (só para ficar mais limpo)
+    t_s = t_s - t_s[0]
+
+    # Novo eixo de tempo uniforme a 100 Hz
+    t_new = np.arange(t_s[0], t_s[-1], 1.0 / target_fs)
+
+    # Interpolar cada eixo
+    x_interp = np.interp(t_new, t_s, df["X"].values)
+    y_interp = np.interp(t_new, t_s, df["Y"].values)
+    z_interp = np.interp(t_new, t_s, df["Z"].values)
+
+    # Detrend
+    x_det = detrend(x_interp)
+    y_det = detrend(y_interp)
+    z_det = detrend(z_interp)
+
+    # Filtro passa-baixa nos eixos detrended
+    x_f = lowpass_filter(x_det, fs=target_fs, cutoff=cutoff)
+    y_f = lowpass_filter(y_det, fs=target_fs, cutoff=cutoff)
+    z_f = lowpass_filter(z_det, fs=target_fs, cutoff=cutoff)
+
+    # Normas
+    norma_raw_interp = np.sqrt(x_interp**2 + y_interp**2 + z_interp**2)
+    norma_filt = np.sqrt(x_f**2 + y_f**2 + z_f**2)
+
+    df_proc = pd.DataFrame({
+        "Tempo": t_new,
+        "X_filt": x_f,
+        "Y_filt": y_f,
+        "Z_filt": z_f,
+        "Norma_raw_interp": norma_raw_interp,
+        "Norma": norma_filt,
+    })
+
+    return df_proc, target_fs  # fs agora é exatamente target_fs
 
 # -------------------------
 # Detecção de início (cadeia de estados)
@@ -72,12 +131,10 @@ def detectar_fim_movimento(labels, base_class=0, min_run=5):
     n = len(labels)
     janela = 2 * min_run
 
-    # começa do final e anda para trás
     for i in range(n - janela, -1, -1):
         bloco1 = labels[i : i + min_run]
         bloco2 = labels[i + min_run : i + janela]
 
-        # movimento -> repouso
         if np.all(bloco1 > base_class) and np.all(bloco2 == base_class):
             return i + min_run  # primeiro índice da sequência em repouso
 
@@ -114,31 +171,15 @@ min_run = st.sidebar.number_input(
 # -------------------------
 if arq_acc is not None and arq_gyro is not None:
     try:
-        df_acc = carregar_dados(arq_acc)
-        df_gyro = carregar_dados(arq_gyro)
+        df_acc_raw = carregar_dados(arq_acc)
+        df_gyro_raw = carregar_dados(arq_gyro)
 
-        # ====== Estimar Fs ======
-        dt_acc = np.diff(df_acc["Tempo"]).mean()
-        dt_gyro = np.diff(df_gyro["Tempo"]).mean()
+        # ====== Pré-processamento: interpola em 100 Hz, detrend, filtra, norma ======
+        df_acc, fs_acc = preprocess_sensor(df_acc_raw, target_fs=100, cutoff=2)
+        df_gyro, fs_gyro = preprocess_sensor(df_gyro_raw, target_fs=100, cutoff=2)
 
-        # Se Tempo está em ms (muitos celulares), faz sentido usar 1000/dt
-        fs_acc = 1000 / dt_acc
-        fs_gyro = 1000 / dt_gyro
-
-        st.write(f"Fs acelerômetro estimado: {fs_acc:.2f} Hz")
-        st.write(f"Fs giroscópio estimado: {fs_gyro:.2f} Hz")
-
-        # ====== Calcular norma ======
-        df_acc["Norma_raw"] = np.sqrt(df_acc["X"]**2 + df_acc["Y"]**2 + df_acc["Z"]**2)
-        df_gyro["Norma_raw"] = np.sqrt(df_gyro["X"]**2 + df_gyro["Y"]**2 + df_gyro["Z"]**2)
-
-        # ====== Detrend ======
-        df_acc["Norma_detrend"] = detrend(df_acc["Norma_raw"])
-        df_gyro["Norma_detrend"] = detrend(df_gyro["Norma_raw"])
-
-        # ====== Filtrar (sobre a série detrended) ======
-        df_acc["Norma"] = lowpass_filter(df_acc["Norma_detrend"], fs_acc)
-        df_gyro["Norma"] = lowpass_filter(df_gyro["Norma_detrend"], fs_gyro)
+        st.write(f"Fs acelerômetro (após interpolação): {fs_acc:.2f} Hz")
+        st.write(f"Fs giroscópio (após interpolação): {fs_gyro:.2f} Hz")
 
         # ----- K-Means na norma filtrada do giroscópio -----
         valores = df_gyro["Norma"].values.reshape(-1, 1)
@@ -162,29 +203,29 @@ if arq_acc is not None and arq_gyro is not None:
 
         if idx_inicio is not None:
             tempo_inicio = df_gyro["Tempo"].iloc[idx_inicio]
-            st.success(f"Início de movimento detectado em ~ *t = {tempo_inicio:.2f}* (unidades do seu eixo Tempo).")
+            st.success(f"Início de movimento detectado em ~ *t = {tempo_inicio:.2f} s*.")
         else:
             st.warning("Nenhuma transição estável (classe 0 → classe > 0) com as condições definidas foi encontrada para o INÍCIO.")
 
         if idx_fim is not None:
             tempo_fim = df_gyro["Tempo"].iloc[idx_fim]
-            st.success(f"Fim de movimento detectado em ~ *t = {tempo_fim:.2f}* (unidades do seu eixo Tempo).")
+            st.success(f"Fim de movimento detectado em ~ *t = {tempo_fim:.2f} s*.")
         else:
             st.warning("Nenhuma transição estável (classe > 0 → classe 0) com as condições definidas foi encontrada para o FIM.")
 
         # ====== Plot ======
-        fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=False)
+        fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
 
         # Acelerômetro
-        axes[0].plot(df_acc["Tempo"], df_acc["Norma_raw"], alpha=0.4, label="Bruto")
-        axes[0].plot(df_acc["Tempo"], df_acc["Norma"], linewidth=2, label="Detrended + Filtrado (2 Hz)")
+        axes[0].plot(df_acc["Tempo"], df_acc["Norma_raw_interp"], alpha=0.4, label="Norma interpolada (bruta)")
+        axes[0].plot(df_acc["Tempo"], df_acc["Norma"], linewidth=2, label="Norma filtrada (detrend + 2 Hz)")
         axes[0].set_ylabel("‖a‖")
-        axes[0].set_title("Norma do Acelerômetro")
+        axes[0].set_title("Norma do Acelerômetro (100 Hz)")
         axes[0].legend()
 
         # Giroscópio
-        axes[1].plot(df_gyro["Tempo"], df_gyro["Norma_raw"], alpha=0.3, label="Bruto")
-        axes[1].plot(df_gyro["Tempo"], df_gyro["Norma"], linewidth=2, label="Detrended + Filtrado (2 Hz)")
+        axes[1].plot(df_gyro["Tempo"], df_gyro["Norma_raw_interp"], alpha=0.3, label="Norma interpolada (bruta)")
+        axes[1].plot(df_gyro["Tempo"], df_gyro["Norma"], linewidth=2, label="Norma filtrada (detrend + 2 Hz)")
 
         # Marcar início
         if tempo_inicio is not None:
@@ -201,16 +242,16 @@ if arq_acc is not None and arq_gyro is not None:
             axes[1].axvspan(tempo_inicio, tempo_fim, alpha=0.15, label="Janela de movimento")
 
         axes[1].set_ylabel("‖ω‖")
-        axes[1].set_xlabel("Tempo")
-        axes[1].set_title("Norma do Giroscópio + Detecção de Mudança de Classe")
+        axes[1].set_xlabel("Tempo (s)")
+        axes[1].set_title("Norma do Giroscópio (100 Hz) + Detecção de Mudança de Classe")
         axes[1].legend()
 
         plt.tight_layout()
         st.pyplot(fig)
 
         # Opcional: mostrar tabela resumida das classes
-        with st.expander("Ver primeiros valores e classes do giroscópio"):
-            st.dataframe(df_gyro[["Tempo", "Norma_raw", "Norma_detrend", "Norma", "Classe"]].head(50))
+        with st.expander("Ver primeiros valores e classes do giroscópio (já interpolado e filtrado)"):
+            st.dataframe(df_gyro[["Tempo", "Norma_raw_interp", "Norma", "Classe"]].head(50))
 
     except Exception as e:
         st.error(f"Erro ao processar arquivos: {e}")
