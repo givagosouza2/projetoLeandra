@@ -6,7 +6,7 @@ from scipy.signal import butter, filtfilt, detrend
 from sklearn.cluster import KMeans  # <= K-Means para discretizar os estados
 
 st.set_page_config(page_title="Gyro ML – Markov", page_icon="📱", layout="centered")
-st.title("📱 Giroscópio – Eixo Médio-Lateral (100 Hz + Detrend + Filtro 2 Hz + Cadeias de Markov)")
+st.title("📱 Giroscópio – Eixo Médio-Lateral (|ML|, 100 Hz + Detrend + Filtro 2 Hz + Cadeias de Markov)")
 
 # -------------------------
 # Função de carregamento
@@ -94,7 +94,7 @@ def preprocess_sensor(df, target_fs=100, cutoff=2):
     return df_proc, target_fs  # fs agora é exatamente target_fs
 
 # -------------------------
-# Detecção de início (cadeia de estados) em estados discretos
+# Detecção de início (cadeia de estados)
 # -------------------------
 def detectar_inicio_movimento(labels, base_class=0, min_run=5):
     """
@@ -206,7 +206,7 @@ if arq_acc is not None and arq_gyro is not None:
             f"Eixo **vertical** (gravidade) ≈ **{eixo_vertical}** "
             f"(|média| = {abs(g_est):.3f}); eixo **médio-lateral** ≈ **{eixo_ml}**."
         )
-        st.caption("A detecção do movimento será feita no giroscópio **apenas no eixo médio-lateral** (ML), usando o módulo |ML_gyro|.")
+        st.caption("A detecção do movimento será feita no giroscópio **usando |ML_gyro|** (valor absoluto do eixo médio-lateral filtrado).")
 
         # ====== 2) Pré-processamento: interpola em 100 Hz, detrend, filtra, norma ======
         df_acc, fs_acc = preprocess_sensor(df_acc_raw, target_fs=100, cutoff=2)
@@ -224,14 +224,16 @@ if arq_acc is not None and arq_gyro is not None:
             df_acc["Vert"] = df_acc["Y_filt"]
             df_acc["ML"] = df_acc["X_filt"]
 
-        # Giroscópio – só precisamos explicitamente do eixo médio-lateral
+        # Giroscópio – eixo médio-lateral e seu módulo
         if eixo_vertical == "X":
             df_gyro["ML_gyro"] = df_gyro["Y_filt"]
         else:
             df_gyro["ML_gyro"] = df_gyro["X_filt"]
 
-        # ====== 4) Aplicar K-Means em |ML_gyro| (cadeias de Markov) ======
-        ml_abs = np.abs(df_gyro["ML_gyro"].values).reshape(-1, 1)
+        df_gyro["ML_gyro_abs"] = np.abs(df_gyro["ML_gyro"])
+
+        # ====== 4) Aplicar K-Means em ML_gyro_abs (cadeias de Markov) ======
+        ml_abs = df_gyro["ML_gyro_abs"].values.reshape(-1, 1)
 
         kmeans = KMeans(n_clusters=k_classes, n_init=10, random_state=42)
         labels_raw = kmeans.fit_predict(ml_abs)
@@ -286,8 +288,8 @@ if arq_acc is not None and arq_gyro is not None:
         axes[1].set_title("Componentes vertical e médio-lateral (acelerômetro)")
         axes[1].legend()
 
-        # Giroscópio – eixo ML_gyro e marcações de início/fim
-        axes[2].plot(df_gyro["Tempo"], df_gyro["ML_gyro"], label="Gyro médio-lateral (ML_gyro)")
+        # Giroscópio – |ML_gyro|
+        axes[2].plot(df_gyro["Tempo"], df_gyro["ML_gyro_abs"], label="|Gyro médio-lateral| (|ML_gyro|)")
 
         if tempo_inicio is not None:
             axes[2].axvline(tempo_inicio, linestyle="--", linewidth=2,
@@ -299,9 +301,9 @@ if arq_acc is not None and arq_gyro is not None:
         if (tempo_inicio is not None) and (tempo_fim is not None) and (tempo_fim > tempo_inicio):
             axes[2].axvspan(tempo_inicio, tempo_fim, alpha=0.15, label="Janela movimento (|ML_gyro|)")
 
-        axes[2].set_ylabel("ω ML (filtrado)")
+        axes[2].set_ylabel("|ω ML| (filtrado)")
         axes[2].set_xlabel("Tempo (s)")
-        axes[2].set_title("Giroscópio – Eixo médio-lateral + Markov em |ML_gyro|")
+        axes[2].set_title("Giroscópio – Valor absoluto do eixo médio-lateral (|ML_gyro|) + Markov")
         axes[2].legend()
 
         plt.tight_layout()
@@ -309,12 +311,14 @@ if arq_acc is not None and arq_gyro is not None:
 
         # ====== Tabelas para inspeção ======
         with st.expander("Ver primeiros valores (gyro) com ML_gyro, |ML_gyro| e Classe"):
-            df_tmp = df_gyro[["Tempo", "ML_gyro", "Classe"]].copy()
-            df_tmp["abs_ML_gyro"] = np.abs(df_tmp["ML_gyro"])
-            st.dataframe(df_tmp.head(200))
+            st.dataframe(
+                df_gyro[["Tempo", "ML_gyro", "ML_gyro_abs", "Classe"]].head(200)
+            )
 
         with st.expander("Ver primeiros valores (acc) com Vert/ML"):
-            st.dataframe(df_acc[["Tempo", "X_filt", "Y_filt", "Vert", "ML", "Norma"]].head(200))
+            st.dataframe(
+                df_acc[["Tempo", "X_filt", "Y_filt", "Vert", "ML", "Norma"]].head(200)
+            )
 
     except Exception as e:
         st.error(f"Erro ao processar arquivos: {e}")
