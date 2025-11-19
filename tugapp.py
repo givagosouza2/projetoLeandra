@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, detrend
 from sklearn.cluster import KMeans  # <= K-Means para discretizar os estados
 
-st.set_page_config(page_title="Gyro ML – Markov", page_icon="📱", layout="centered")
-st.title("📱 Giroscópio – Eixo Médio-Lateral (|ML|, 100 Hz + Detrend + Filtro 2 Hz + Cadeias de Markov)")
+st.set_page_config(page_title="Gyro ML & Z – Markov", page_icon="📱", layout="centered")
+st.title("📱 Giroscópio – ML (|ML|) para movimento e Z para transientes (100 Hz + Detrend + Filtro 2 Hz)")
 
 # -------------------------
 # Função de carregamento
@@ -78,7 +78,7 @@ def preprocess_sensor(df, target_fs=100, cutoff=2):
     y_f = lowpass_filter(y_det, fs=target_fs, cutoff=cutoff)
     z_f = lowpass_filter(z_det, fs=target_fs, cutoff=cutoff)
 
-    # Normas
+    # Normas (não usadas diretamente aqui, mas úteis se precisar depois)
     norma_raw_interp = np.sqrt(x_interp**2 + y_interp**2 + z_interp**2)
     norma_filt = np.sqrt(x_f**2 + y_f**2 + z_f**2)
 
@@ -152,6 +152,69 @@ def detectar_fim_movimento(labels, min_run=5):
     return None
 
 # -------------------------
+# Detecção de TODOS os transientes dentro da janela de movimento
+# (usando labels discretos de qualquer série – aqui, do eixo Z)
+# -------------------------
+def detectar_transientes(labels, idx_inicio, idx_fim, min_run=5):
+    """
+    Dentro da janela [idx_inicio, idx_fim], detecta múltiplos componentes transientes:
+
+    - Estado de referência = labels[idx_inicio] (classe_inicial).
+    - Um transiente é definido como:
+        sequência de min_run amostras com classe > classe_inicial (início),
+        seguida (em algum ponto) de sequência de min_run amostras com classe == classe_inicial (fim).
+
+    Retorna uma lista de tuplas:
+        [(idx_ini_1, idx_fim_1), (idx_ini_2, idx_fim_2), ...]
+    Se nenhum transiente for encontrado, retorna lista vazia.
+    """
+    if idx_inicio is None or idx_fim is None:
+        return []
+
+    labels = np.asarray(labels)
+    n = len(labels)
+
+    idx_inicio = int(idx_inicio)
+    idx_fim = int(idx_fim)
+
+    if idx_fim <= idx_inicio + 2 * min_run:
+        return []
+
+    classe_inicial = labels[idx_inicio]
+    transientes = []
+
+    i = idx_inicio
+    last_possible = min(idx_fim, n - min_run)
+
+    while i <= last_possible:
+        # 1) Procurar início de um transiente (classe > classe_inicial por min_run)
+        if np.all(labels[i : i + min_run] > classe_inicial):
+            idx_ini_trans = i
+            # Avança pelo menos min_run
+            i = i + min_run
+
+            # 2) Procurar o fim do transiente (classe == classe_inicial por min_run)
+            idx_fim_trans = None
+            j_last_possible = min(idx_fim, n - min_run)
+            for j in range(i, j_last_possible + 1):
+                if np.all(labels[j : j + min_run] == classe_inicial):
+                    idx_fim_trans = j
+                    i = j + min_run  # próxima busca começa depois desse retorno
+                    break
+
+            if idx_fim_trans is None:
+                # Não encontrou retorno estável ao estado inicial; considerar
+                # o fim na borda da janela de movimento
+                idx_fim_trans = idx_fim
+                i = idx_fim + 1  # força saída do loop
+
+            transientes.append((idx_ini_trans, idx_fim_trans))
+        else:
+            i += 1
+
+    return transientes
+
+# -------------------------
 # Upload
 # -------------------------
 col1, col2 = st.columns(2)
@@ -161,9 +224,9 @@ with col1:
 with col2:
     arq_gyro = st.file_uploader("Arquivo do giroscópio", type=["csv", "txt"], key="gyro")
 
-# Parâmetros do K-Means (para |ML_gyro|)
+# Parâmetros do K-Means
 k_classes = st.sidebar.number_input(
-    "Número de classes (K-Means – |gyro ML|)",
+    "Número de classes (K-Means – |gyro ML| e |gyro Z|)",
     min_value=2,
     max_value=6,
     value=3,
@@ -199,60 +262,52 @@ if arq_acc is not None and arq_gyro is not None:
             eixo_ml = "X"
             g_est = mean_y
 
-        st.subheader("📐 Orientação aproximada do smartphone")
+        st.subheader("📐 Orientação aproximada do smartphone (via acc)")
         st.write(f"Média do eixo X (acc): {mean_x:.3f}")
         st.write(f"Média do eixo Y (acc): {mean_y:.3f}")
         st.success(
             f"Eixo **vertical** (gravidade) ≈ **{eixo_vertical}** "
             f"(|média| = {abs(g_est):.3f}); eixo **médio-lateral** ≈ **{eixo_ml}**."
         )
-        st.caption("A detecção do movimento será feita no giroscópio **usando |ML_gyro|** (valor absoluto do eixo médio-lateral filtrado).")
+        st.caption("Para o giroscópio, o eixo médio-lateral é X ou Y (conforme acima) e o eixo Z será usado como eixo 'vertical' para buscar transientes.")
 
-        # ====== 2) Pré-processamento: interpola em 100 Hz, detrend, filtra, norma ======
+        # ====== 2) Pré-processamento: interpola em 100 Hz, detrend, filtra ======
         df_acc, fs_acc = preprocess_sensor(df_acc_raw, target_fs=100, cutoff=2)
         df_gyro, fs_gyro = preprocess_sensor(df_gyro_raw, target_fs=100, cutoff=2)
 
-        st.write(f"Fs acelerômetro (após interpolação): {fs_acc:.2f} Hz")
         st.write(f"Fs giroscópio (após interpolação): {fs_gyro:.2f} Hz")
 
-        # ====== 3) Definir eixos Vert/ML no acc e ML_gyro no gyro ======
-        # Acelerômetro
-        if eixo_vertical == "X":
-            df_acc["Vert"] = df_acc["X_filt"]
-            df_acc["ML"] = df_acc["Y_filt"]
-        else:
-            df_acc["Vert"] = df_acc["Y_filt"]
-            df_acc["ML"] = df_acc["X_filt"]
-
-        # Giroscópio – eixo médio-lateral e seu módulo
+        # ====== 3) Definir ML_gyro e Z_gyro ======
         if eixo_vertical == "X":
             df_gyro["ML_gyro"] = df_gyro["Y_filt"]
         else:
             df_gyro["ML_gyro"] = df_gyro["X_filt"]
 
         df_gyro["ML_gyro_abs"] = np.abs(df_gyro["ML_gyro"])
+        # Eixo vertical (Z) do giroscópio
+        df_gyro["Z_gyro"] = df_gyro["Z_filt"]
+        df_gyro["Z_gyro_abs"] = np.abs(df_gyro["Z_gyro"])
 
-        # ====== 4) Aplicar K-Means em ML_gyro_abs (cadeias de Markov) ======
+        # ====== 4) Markov em |ML_gyro| para início/fim do movimento ======
         ml_abs = df_gyro["ML_gyro_abs"].values.reshape(-1, 1)
 
-        kmeans = KMeans(n_clusters=k_classes, n_init=10, random_state=42)
-        labels_raw = kmeans.fit_predict(ml_abs)
-        centros = kmeans.cluster_centers_.flatten()
+        kmeans_ml = KMeans(n_clusters=k_classes, n_init=10, random_state=42)
+        labels_ml_raw = kmeans_ml.fit_predict(ml_abs)
+        centros_ml = kmeans_ml.cluster_centers_.flatten()
 
-        # Ordenar classes pelos centros (classe 0 = menor |ML|, presumido repouso)
-        ordem = np.argsort(centros)           # índices dos clusters do menor pro maior
-        mapa = {old_label: rank for rank, old_label in enumerate(ordem)}
-        labels = np.array([mapa[l] for l in labels_raw])
-
-        df_gyro["Classe"] = labels
+        # Ordenar classes (0 = menor |ML| => repouso)
+        ordem_ml = np.argsort(centros_ml)
+        mapa_ml = {old_label: rank for rank, old_label in enumerate(ordem_ml)}
+        labels_ml = np.array([mapa_ml[l] for l in labels_ml_raw])
+        df_gyro["Classe_ML"] = labels_ml
 
         st.write("Centros dos clusters em |ML_gyro| (ordenados):")
         for idx in range(k_classes):
-            st.write(f"Classe {idx}: centro ≈ {np.sort(centros)[idx]:.4f}")
+            st.write(f"Classe_ML {idx}: centro ≈ {np.sort(centros_ml)[idx]:.4f}")
 
-        # ====== 5) Detectar início e fim do movimento (usando classes em |ML_gyro|) ======
-        idx_inicio = detectar_inicio_movimento(df_gyro["Classe"], base_class=0, min_run=min_run)
-        idx_fim = detectar_fim_movimento(df_gyro["Classe"], min_run=min_run)
+        # Início e fim do movimento (baseado em |ML_gyro|)
+        idx_inicio = detectar_inicio_movimento(df_gyro["Classe_ML"], base_class=0, min_run=min_run)
+        idx_fim = detectar_fim_movimento(df_gyro["Classe_ML"], min_run=min_run)
 
         tempo_inicio = None
         tempo_fim = None
@@ -261,67 +316,105 @@ if arq_acc is not None and arq_gyro is not None:
             tempo_inicio = df_gyro["Tempo"].iloc[idx_inicio]
             st.success(f"Início de movimento (|ML_gyro|) detectado em ~ *t = {tempo_inicio:.2f} s*.")
         else:
-            st.warning("Nenhuma transição estável (classe 0 → classe > 0 em |ML_gyro|) foi encontrada para o INÍCIO.")
+            st.warning("Nenhuma transição estável (Classe_ML 0 → Classe_ML > 0) foi encontrada para o INÍCIO.")
 
         if idx_fim is not None:
             tempo_fim = df_gyro["Tempo"].iloc[idx_fim]
             st.success(f"Fim de movimento (|ML_gyro|) detectado em ~ *t = {tempo_fim:.2f} s* (usando estado final do registro).")
         else:
-            st.warning("Nenhuma transição estável para o estado final foi encontrada para o FIM da ação em |ML_gyro|.")
+            st.warning("Nenhuma transição estável para o estado final foi encontrada para o FIM do movimento em |ML_gyro|.")
+
+        # ====== 5) Markov em |Z_gyro| para DETECTAR TRANSIENTES dentro da janela ======
+        transientes_z = []
+        if (idx_inicio is not None) and (idx_fim is not None) and (idx_fim > idx_inicio):
+            z_abs = df_gyro["Z_gyro_abs"].values.reshape(-1, 1)
+
+            kmeans_z = KMeans(n_clusters=k_classes, n_init=10, random_state=42)
+            labels_z_raw = kmeans_z.fit_predict(z_abs)
+            centros_z = kmeans_z.cluster_centers_.flatten()
+
+            # Ordenar classes (0 = menor |Z|)
+            ordem_z = np.argsort(centros_z)
+            mapa_z = {old_label: rank for rank, old_label in enumerate(ordem_z)}
+            labels_z = np.array([mapa_z[l] for l in labels_z_raw])
+            df_gyro["Classe_Z"] = labels_z
+
+            st.write("Centros dos clusters em |Z_gyro| (ordenados):")
+            for idx in range(k_classes):
+                st.write(f"Classe_Z {idx}: centro ≈ {np.sort(centros_z)[idx]:.4f}")
+
+            # Detectar transientes da série temporal do giroscópio no eixo Z
+            transientes_z = detectar_transientes(df_gyro["Classe_Z"], idx_inicio, idx_fim, min_run=min_run)
+
+            if len(transientes_z) == 0:
+                st.info("Nenhum transiente detectado no eixo Z dentro da janela de movimento.")
+            else:
+                st.info(f"Foram detectados {len(transientes_z)} transiente(s) no eixo Z dentro da janela de movimento.")
+                for k, (i_ini, i_fim) in enumerate(transientes_z, start=1):
+                    t_ini = df_gyro["Tempo"].iloc[i_ini]
+                    t_fim = df_gyro["Tempo"].iloc[i_fim]
+                    st.write(
+                        f"Transiente Z {k}: início ~ *t = {t_ini:.2f} s*, fim ~ *t = {t_fim:.2f} s* "
+                        f"(duração ≈ {(t_fim - t_ini):.2f} s)."
+                    )
+        else:
+            st.info("Janela de movimento não definida (sem início ou fim válidos) – não foi possível buscar transientes em Z.")
 
         # =========================
-        # 6) PLOTS
+        # 6) PLOTS – somente giroscópio (ML e Z)
         # =========================
-        fig, axes = plt.subplots(3, 1, figsize=(9, 10), sharex=True)
+        fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
 
-        # Acelerômetro - norma
-        axes[0].plot(df_acc["Tempo"], df_acc["Norma_raw_interp"], alpha=0.4, label="Norma interpolada (bruta)")
-        axes[0].plot(df_acc["Tempo"], df_acc["Norma"], linewidth=2, label="Norma filtrada (detrend + 2 Hz)")
-        axes[0].set_ylabel("‖a‖")
-        axes[0].set_title("Norma do Acelerômetro (100 Hz)")
-        axes[0].legend()
-
-        # Acelerômetro - eixos Vert / ML
-        axes[1].plot(df_acc["Tempo"], df_acc["Vert"], label=f"Eixo vertical acc ({eixo_vertical}_filt)")
-        axes[1].plot(df_acc["Tempo"], df_acc["ML"], linestyle="--", label=f"Eixo médio-lateral acc ({eixo_ml}_filt)")
-        axes[1].set_ylabel("a (filtrado)")
-        axes[1].set_title("Componentes vertical e médio-lateral (acelerômetro)")
-        axes[1].legend()
-
-        # Giroscópio – |ML_gyro|
-        axes[2].plot(df_gyro["Tempo"], df_gyro["ML_gyro_abs"], label="|Gyro médio-lateral| (|ML_gyro|)")
+        # --- Giroscópio – |ML_gyro| ---
+        axes[0].plot(df_gyro["Tempo"], df_gyro["ML_gyro_abs"], label="|Gyro médio-lateral| (|ML_gyro|)")
 
         if tempo_inicio is not None:
-            axes[2].axvline(tempo_inicio, linestyle="--", linewidth=2,
+            axes[0].axvline(tempo_inicio, linestyle="--", linewidth=2,
                             label="Início movimento (|ML_gyro|)")
         if tempo_fim is not None:
-            axes[2].axvline(tempo_fim, linestyle="--", linewidth=2,
+            axes[0].axvline(tempo_fim, linestyle="--", linewidth=2,
                             label="Fim movimento (|ML_gyro|)")
 
         if (tempo_inicio is not None) and (tempo_fim is not None) and (tempo_fim > tempo_inicio):
-            axes[2].axvspan(tempo_inicio, tempo_fim, alpha=0.15, label="Janela movimento (|ML_gyro|)")
+            axes[0].axvspan(tempo_inicio, tempo_fim, alpha=0.15, label="Janela movimento")
 
-        axes[2].set_ylabel("|ω ML| (filtrado)")
-        axes[2].set_xlabel("Tempo (s)")
-        axes[2].set_title("Giroscópio – Valor absoluto do eixo médio-lateral (|ML_gyro|) + Markov")
-        axes[2].legend()
+        axes[0].set_ylabel("|ω ML| (filtrado)")
+        axes[0].set_title("Giroscópio – Valor absoluto do eixo médio-lateral (|ML_gyro|)")
+        axes[0].legend()
+
+        # --- Giroscópio – eixo Z (série temporal + transientes) ---
+        axes[1].plot(df_gyro["Tempo"], df_gyro["Z_gyro"], label="Gyro eixo Z (Z_gyro)")
+
+        if tempo_inicio is not None and tempo_fim is not None and tempo_fim > tempo_inicio:
+            axes[1].axvspan(tempo_inicio, tempo_fim, alpha=0.10, label="Janela movimento")
+
+        # Sombrear transientes em Z
+        if len(transientes_z) > 0:
+            for k, (i_ini, i_fim) in enumerate(transientes_z, start=1):
+                t_ini = df_gyro["Tempo"].iloc[i_ini]
+                t_fim = df_gyro["Tempo"].iloc[i_fim]
+                axes[1].axvspan(t_ini, t_fim, alpha=0.25,
+                                label="Transiente Z" if k == 1 else None)
+
+        axes[1].set_ylabel("ω Z (filtrado)")
+        axes[1].set_xlabel("Tempo (s)")
+        axes[1].set_title("Giroscópio – Eixo Z com transientes dentro da janela de movimento")
+        axes[1].legend()
 
         plt.tight_layout()
         st.pyplot(fig)
 
         # ====== Tabelas para inspeção ======
-        with st.expander("Ver primeiros valores (gyro) com ML_gyro, |ML_gyro| e Classe"):
+        with st.expander("Ver primeiros valores (gyro) – ML e Z"):
             st.dataframe(
-                df_gyro[["Tempo", "ML_gyro", "ML_gyro_abs", "Classe"]].head(200)
-            )
-
-        with st.expander("Ver primeiros valores (acc) com Vert/ML"):
-            st.dataframe(
-                df_acc[["Tempo", "X_filt", "Y_filt", "Vert", "ML", "Norma"]].head(200)
+                df_gyro[["Tempo", "ML_gyro", "ML_gyro_abs",
+                         "Z_gyro", "Z_gyro_abs",
+                         "Classe_ML"] + (["Classe_Z"] if "Classe_Z" in df_gyro.columns else [])
+                ].head(200)
             )
 
     except Exception as e:
         st.error(f"Erro ao processar arquivos: {e}")
 
 else:
-    st.info("Faça o upload dos dois arquivos para ver a orientação do smartphone e a detecção de início/fim do movimento em |ML_gyro|.")
+    st.info("Faça o upload dos dois arquivos para ver o giroscópio nos eixos médio-lateral e Z, com detecção de movimento e transientes.")
