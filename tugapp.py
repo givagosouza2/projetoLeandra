@@ -98,8 +98,8 @@ def preprocess_sensor(df, target_fs=100, cutoff=2):
 # -------------------------
 def detectar_inicio_movimento(labels, base_class=0, min_run=5):
     """
-    Encontra o primeiro índice em que ocorre:
-      [base_class]*min_run seguido de [classe > base_class]*min_run.
+    Início do movimento:
+    [base_class]*min_run seguido de [classe > base_class]*min_run.
     Retorna o índice do primeiro elemento da segunda sequência (início do movimento),
     ou None se não encontrar.
     """
@@ -116,26 +116,37 @@ def detectar_inicio_movimento(labels, base_class=0, min_run=5):
     return None
 
 # -------------------------
-# Detecção de fim (cadeia de estados, varrendo de trás pra frente)
+# Detecção de fim da ação usando o ESTADO DO FIM DO REGISTRO
 # -------------------------
-def detectar_fim_movimento(labels, base_class=0, min_run=5):
+def detectar_fim_movimento(labels, min_run=5):
     """
-    Encontra o último índice em que ocorre:
-      [classe > base_class]*min_run seguido de [base_class]*min_run,
-    varrendo a série de trás pra frente.
+    Determina o fim do movimento usando como estado de repouso
+    o estado presente no FIM do registro (última amostra).
 
-    Retorna o índice do primeiro elemento da sequência de base_class (fim do movimento),
+    Padrão procurado (de trás pra frente):
+        [classe != estado_final]*min_run
+        seguido de
+        [estado_final]*min_run
+
+    Retorna o índice do primeiro elemento da sequência de estado_final (fim do movimento),
     ou None se não encontrar.
     """
     labels = np.asarray(labels)
     n = len(labels)
+    if n < 2 * min_run:
+        return None
+
+    # Estado de repouso = estado da última amostra
+    estado_final = labels[-1]
+
     janela = 2 * min_run
 
     for i in range(n - janela, -1, -1):
         bloco1 = labels[i : i + min_run]
         bloco2 = labels[i + min_run : i + janela]
 
-        if np.all(bloco1 > base_class) and np.all(bloco2 == base_class):
+        # movimento -> repouso (repouso = estado_final)
+        if np.all(bloco1 != estado_final) and np.all(bloco2 == estado_final):
             return i + min_run  # primeiro índice da sequência em repouso
 
     return None
@@ -191,8 +202,8 @@ def detectar_transientes(labels, idx_inicio, idx_fim, min_run=5):
                     break
 
             if idx_fim_trans is None:
-                # Não encontrou retorno estável ao estado inicial; podemos
-                # considerar o fim na borda da janela de movimento
+                # Não encontrou retorno estável ao estado inicial; considerar
+                # o fim na borda da janela de movimento
                 idx_fim_trans = idx_fim
                 i = idx_fim + 1  # força saída do loop
 
@@ -258,7 +269,7 @@ if arq_acc is not None and arq_gyro is not None:
 
         # ====== Detectar início e fim do movimento ======
         idx_inicio = detectar_inicio_movimento(df_gyro["Classe"], base_class=0, min_run=min_run)
-        idx_fim = detectar_fim_movimento(df_gyro["Classe"], base_class=0, min_run=min_run)
+        idx_fim = detectar_fim_movimento(df_gyro["Classe"], min_run=min_run)
 
         tempo_inicio = None
         tempo_fim = None
@@ -271,9 +282,9 @@ if arq_acc is not None and arq_gyro is not None:
 
         if idx_fim is not None:
             tempo_fim = df_gyro["Tempo"].iloc[idx_fim]
-            st.success(f"Fim de movimento detectado em ~ *t = {tempo_fim:.2f} s*.")
+            st.success(f"Fim de movimento detectado em ~ *t = {tempo_fim:.2f} s* (usando estado final do registro).")
         else:
-            st.warning("Nenhuma transição estável (classe > 0 → classe 0) com as condições definidas foi encontrada para o FIM.")
+            st.warning("Nenhuma transição estável para o estado final foi encontrada para o FIM da ação.")
 
         # ====== Detectar TODOS os componentes transientes dentro da janela ======
         transientes = []
