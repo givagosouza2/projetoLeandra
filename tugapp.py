@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, filtfilt, detrend
 from sklearn.cluster import KMeans  # <= K-Means para discretizar os estados
 
 st.set_page_config(page_title="Normas Acc & Gyro", page_icon="📱", layout="centered")
-st.title("📱 Normas do Acelerômetro e Giroscópio (Filtro 2 Hz + Início e Fim do Movimento)")
+st.title("📱 Normas do Acelerômetro e Giroscópio (Filtro 2 Hz + Detrend + Início e Fim do Movimento)")
 
 # -------------------------
 # Função de carregamento
@@ -132,9 +132,13 @@ if arq_acc is not None and arq_gyro is not None:
         df_acc["Norma_raw"] = np.sqrt(df_acc["X"]**2 + df_acc["Y"]**2 + df_acc["Z"]**2)
         df_gyro["Norma_raw"] = np.sqrt(df_gyro["X"]**2 + df_gyro["Y"]**2 + df_gyro["Z"]**2)
 
-        # ====== Filtrar ======
-        df_acc["Norma"] = lowpass_filter(df_acc["Norma_raw"], fs_acc)
-        df_gyro["Norma"] = lowpass_filter(df_gyro["Norma_raw"], fs_gyro)
+        # ====== Detrend ======
+        df_acc["Norma_detrend"] = detrend(df_acc["Norma_raw"])
+        df_gyro["Norma_detrend"] = detrend(df_gyro["Norma_raw"])
+
+        # ====== Filtrar (sobre a série detrended) ======
+        df_acc["Norma"] = lowpass_filter(df_acc["Norma_detrend"], fs_acc)
+        df_gyro["Norma"] = lowpass_filter(df_gyro["Norma_detrend"], fs_gyro)
 
         # ----- K-Means na norma filtrada do giroscópio -----
         valores = df_gyro["Norma"].values.reshape(-1, 1)
@@ -173,14 +177,14 @@ if arq_acc is not None and arq_gyro is not None:
 
         # Acelerômetro
         axes[0].plot(df_acc["Tempo"], df_acc["Norma_raw"], alpha=0.4, label="Bruto")
-        axes[0].plot(df_acc["Tempo"], df_acc["Norma"], linewidth=2, label="Filtrado (2 Hz)")
+        axes[0].plot(df_acc["Tempo"], df_acc["Norma"], linewidth=2, label="Detrended + Filtrado (2 Hz)")
         axes[0].set_ylabel("‖a‖")
         axes[0].set_title("Norma do Acelerômetro")
         axes[0].legend()
 
         # Giroscópio
         axes[1].plot(df_gyro["Tempo"], df_gyro["Norma_raw"], alpha=0.3, label="Bruto")
-        axes[1].plot(df_gyro["Tempo"], df_gyro["Norma"], linewidth=2, label="Filtrado (2 Hz)")
+        axes[1].plot(df_gyro["Tempo"], df_gyro["Norma"], linewidth=2, label="Detrended + Filtrado (2 Hz)")
 
         # Marcar início
         if tempo_inicio is not None:
@@ -206,7 +210,7 @@ if arq_acc is not None and arq_gyro is not None:
 
         # Opcional: mostrar tabela resumida das classes
         with st.expander("Ver primeiros valores e classes do giroscópio"):
-            st.dataframe(df_gyro[["Tempo", "Norma", "Classe"]].head(50))
+            st.dataframe(df_gyro[["Tempo", "Norma_raw", "Norma_detrend", "Norma", "Classe"]].head(50))
 
     except Exception as e:
         st.error(f"Erro ao processar arquivos: {e}")
