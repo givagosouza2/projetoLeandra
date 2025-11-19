@@ -6,7 +6,7 @@ from scipy.signal import butter, filtfilt, detrend
 from sklearn.cluster import KMeans  # <= K-Means para discretizar os estados
 
 st.set_page_config(page_title="Gyro ML & Z – Markov", page_icon="📱", layout="centered")
-st.title("📱 Giroscópio – ML (|ML|) para movimento e Z para transientes (100 Hz + Detrend + Filtro 2 Hz)")
+st.title("📱 Giroscópio – ML (|ML|) para movimento e |Z| para transientes (100 Hz + Detrend + Filtro 2 Hz)")
 
 # -------------------------
 # Função de carregamento
@@ -269,7 +269,7 @@ if arq_acc is not None and arq_gyro is not None:
             f"Eixo **vertical** (gravidade) ≈ **{eixo_vertical}** "
             f"(|média| = {abs(g_est):.3f}); eixo **médio-lateral** ≈ **{eixo_ml}**."
         )
-        st.caption("Para o giroscópio, o eixo médio-lateral é X ou Y (conforme acima) e o eixo Z será usado como eixo 'vertical' para buscar transientes.")
+        st.caption("Para o giroscópio, o eixo médio-lateral é X ou Y (conforme acima) e o eixo Z será analisado em |Z| para transientes.")
 
         # ====== 2) Pré-processamento: interpola em 100 Hz, detrend, filtra ======
         df_acc, fs_acc = preprocess_sensor(df_acc_raw, target_fs=100, cutoff=2)
@@ -382,8 +382,8 @@ if arq_acc is not None and arq_gyro is not None:
         axes[0].set_title("Giroscópio – Valor absoluto do eixo médio-lateral (|ML_gyro|)")
         axes[0].legend()
 
-        # --- Giroscópio – eixo Z (série temporal + transientes) ---
-        axes[1].plot(df_gyro["Tempo"], df_gyro["Z_gyro"], label="Gyro eixo Z (Z_gyro)")
+        # --- Giroscópio – |Z_gyro| (série temporal + transientes) ---
+        axes[1].plot(df_gyro["Tempo"], df_gyro["Z_gyro_abs"], label="|Gyro eixo Z| (|Z_gyro|)")
 
         if tempo_inicio is not None and tempo_fim is not None and tempo_fim > tempo_inicio:
             axes[1].axvspan(tempo_inicio, tempo_fim, alpha=0.10, label="Janela movimento")
@@ -396,9 +396,9 @@ if arq_acc is not None and arq_gyro is not None:
                 axes[1].axvspan(t_ini, t_fim, alpha=0.25,
                                 label="Transiente Z" if k == 1 else None)
 
-        axes[1].set_ylabel("ω Z (filtrado)")
+        axes[1].set_ylabel("|ω Z| (filtrado)")
         axes[1].set_xlabel("Tempo (s)")
-        axes[1].set_title("Giroscópio – Eixo Z com transientes dentro da janela de movimento")
+        axes[1].set_title("Giroscópio – Valor absoluto do eixo Z (|Z_gyro|) com transientes")
         axes[1].legend()
 
         plt.tight_layout()
@@ -417,4 +417,4 @@ if arq_acc is not None and arq_gyro is not None:
         st.error(f"Erro ao processar arquivos: {e}")
 
 else:
-    st.info("Faça o upload dos dois arquivos para ver o giroscópio nos eixos médio-lateral e Z, com detecção de movimento e transientes.")
+    st.info("Faça o upload dos dois arquivos para ver o giroscópio nos eixos médio-lateral e |Z|, com detecção de movimento e transientes.")
