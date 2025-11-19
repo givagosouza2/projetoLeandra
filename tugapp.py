@@ -6,7 +6,7 @@ from scipy.signal import butter, filtfilt, detrend
 from sklearn.cluster import KMeans  # <= K-Means para discretizar os estados
 
 st.set_page_config(page_title="Normas Acc & Gyro", page_icon="📱", layout="centered")
-st.title("📱 Normas do Acelerômetro e Giroscópio (100 Hz + Detrend + Filtro 2 Hz + Início/Fim do Movimento)")
+st.title("📱 Normas do Acelerômetro e Giroscópio (100 Hz + Detrend + Filtro 2 Hz + Início/Fim + Transiente)")
 
 # -------------------------
 # Função de carregamento
@@ -57,7 +57,7 @@ def preprocess_sensor(df, target_fs=100, cutoff=2):
     else:
         t_s = t_orig.astype(float)
 
-    # Normaliza para começar em 0 (só para ficar mais limpo)
+    # Normaliza para começar em 0
     t_s = t_s - t_s[0]
 
     # Novo eixo de tempo uniforme a 100 Hz
@@ -141,6 +141,39 @@ def detectar_fim_movimento(labels, base_class=0, min_run=5):
     return None
 
 # -------------------------
+# Detecção de início de componente transiente dentro da janela de movimento
+# -------------------------
+def detectar_inicio_transiente(labels, idx_inicio, idx_fim, min_run=5):
+    """
+    Dentro da janela [idx_inicio, idx_fim], procura o primeiro índice em que
+    surge uma sequência de min_run amostras com classe > classe_inicial.
+
+    - classe_inicial = labels[idx_inicio]
+    - Retorna o índice do primeiro elemento dessa sequência (início do transiente),
+      ou None se não encontrar.
+    """
+    if idx_inicio is None or idx_fim is None:
+        return None
+
+    labels = np.asarray(labels)
+    n = len(labels)
+
+    # Garantir limites válidos
+    idx_inicio = int(idx_inicio)
+    idx_fim = int(idx_fim)
+    if idx_fim <= idx_inicio + min_run:
+        return None
+
+    classe_inicial = labels[idx_inicio]
+    # Procurar a partir do início do movimento até antes do fim menos min_run
+    for i in range(idx_inicio, min(idx_fim, n - min_run) + 1):
+        bloco = labels[i : i + min_run]
+        if np.all(bloco > classe_inicial):
+            return i
+
+    return None
+
+# -------------------------
 # Upload
 # -------------------------
 col1, col2 = st.columns(2)
@@ -200,6 +233,7 @@ if arq_acc is not None and arq_gyro is not None:
 
         tempo_inicio = None
         tempo_fim = None
+        tempo_transiente = None
 
         if idx_inicio is not None:
             tempo_inicio = df_gyro["Tempo"].iloc[idx_inicio]
@@ -212,6 +246,21 @@ if arq_acc is not None and arq_gyro is not None:
             st.success(f"Fim de movimento detectado em ~ *t = {tempo_fim:.2f} s*.")
         else:
             st.warning("Nenhuma transição estável (classe > 0 → classe 0) com as condições definidas foi encontrada para o FIM.")
+
+        # ====== Detectar início de componente transiente dentro da janela de movimento ======
+        idx_transiente = None
+        if (idx_inicio is not None) and (idx_fim is not None) and (idx_fim > idx_inicio):
+            idx_transiente = detectar_inicio_transiente(
+                df_gyro["Classe"], idx_inicio, idx_fim, min_run=min_run
+            )
+            if idx_transiente is not None:
+                tempo_transiente = df_gyro["Tempo"].iloc[idx_transiente]
+                st.info(
+                    f"Início de componente transiente dentro da janela de movimento em ~ *t = {tempo_transiente:.2f} s* "
+                    f"(mudança para classes superiores ao estado inicial por ≥ {min_run} amostras)."
+                )
+            else:
+                st.info("Nenhum componente transiente (classe > estado inicial por sequência longa) foi detectado dentro da janela de movimento.")
 
         # ====== Plot ======
         fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
@@ -230,12 +279,17 @@ if arq_acc is not None and arq_gyro is not None:
         # Marcar início
         if tempo_inicio is not None:
             axes[1].axvline(tempo_inicio, linestyle="--", linewidth=2,
-                            label="Início do movimento (Markov+K-Means)")
+                            label="Início do movimento")
 
         # Marcar fim
         if tempo_fim is not None:
             axes[1].axvline(tempo_fim, linestyle="--", linewidth=2,
-                            label="Fim do movimento (Markov+K-Means)")
+                            label="Fim do movimento")
+
+        # Marcar início do componente transiente
+        if tempo_transiente is not None:
+            axes[1].axvline(tempo_transiente, linestyle=":", linewidth=2,
+                            label="Início componente transiente")
 
         # Sombrear janela de movimento, se fizer sentido
         if (tempo_inicio is not None) and (tempo_fim is not None) and (tempo_fim > tempo_inicio):
@@ -251,10 +305,10 @@ if arq_acc is not None and arq_gyro is not None:
 
         # Opcional: mostrar tabela resumida das classes
         with st.expander("Ver primeiros valores e classes do giroscópio (já interpolado e filtrado)"):
-            st.dataframe(df_gyro[["Tempo", "Norma_raw_interp", "Norma", "Classe"]].head(50))
+            st.dataframe(df_gyro[["Tempo", "Norma_raw_interp", "Norma", "Classe"]].head(80))
 
     except Exception as e:
         st.error(f"Erro ao processar arquivos: {e}")
 
 else:
-    st.info("Faça o upload dos dois arquivos para ver os gráficos e a detecção do início e fim do movimento.")
+    st.info("Faça o upload dos dois arquivos para ver os gráficos e a detecção do início, fim e componente transiente do movimento.")
