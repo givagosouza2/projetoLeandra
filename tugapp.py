@@ -247,9 +247,47 @@ if arq_acc is not None and arq_gyro is not None:
         df_acc_raw = carregar_dados(arq_acc)
         df_gyro_raw = carregar_dados(arq_gyro)
 
+        # ====== Inferir orientação pelos eixos X e Y do acelerômetro (média) ======
+        mean_x = df_acc_raw["X"].mean()
+        mean_y = df_acc_raw["Y"].mean()
+
+        if abs(mean_x) >= abs(mean_y):
+            eixo_vertical = "X"
+            eixo_ml = "Y"
+            g_est = mean_x
+        else:
+            eixo_vertical = "Y"
+            eixo_ml = "X"
+            g_est = mean_y
+
+        st.subheader("📐 Orientação aproximada do smartphone")
+        st.write(f"Média do eixo X: {mean_x:.3f}")
+        st.write(f"Média do eixo Y: {mean_y:.3f}")
+        st.success(
+            f"Eixo **vertical** (gravidade) ≈ **{eixo_vertical}** "
+            f"(|média| = {abs(g_est):.3f}); eixo **médio-lateral** ≈ **{eixo_ml}**."
+        )
+        st.caption("Essa orientação é usada para renomear os eixos tanto do acelerômetro quanto do giroscópio.")
+
         # ====== Pré-processamento: interpola em 100 Hz, detrend, filtra, norma ======
         df_acc, fs_acc = preprocess_sensor(df_acc_raw, target_fs=100, cutoff=2)
         df_gyro, fs_gyro = preprocess_sensor(df_gyro_raw, target_fs=100, cutoff=2)
+
+        # Criar colunas Vert / ML no acelerômetro, usando os eixos filtrados
+        if eixo_vertical == "X":
+            df_acc["Vert"] = df_acc["X_filt"]
+            df_acc["ML"] = df_acc["Y_filt"]
+        else:
+            df_acc["Vert"] = df_acc["Y_filt"]
+            df_acc["ML"] = df_acc["X_filt"]
+
+        # Criar colunas Vert_gyro / ML_gyro no giroscópio, usando a MESMA orientação
+        if eixo_vertical == "X":
+            df_gyro["Vert_gyro"] = df_gyro["X_filt"]
+            df_gyro["ML_gyro"] = df_gyro["Y_filt"]
+        else:
+            df_gyro["Vert_gyro"] = df_gyro["Y_filt"]
+            df_gyro["ML_gyro"] = df_gyro["X_filt"]
 
         st.write(f"Fs acelerômetro (após interpolação): {fs_acc:.2f} Hz")
         st.write(f"Fs giroscópio (após interpolação): {fs_gyro:.2f} Hz")
@@ -304,30 +342,37 @@ if arq_acc is not None and arq_gyro is not None:
                     )
 
         # ====== Plot ======
-        fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
+        fig, axes = plt.subplots(4, 1, figsize=(9, 12), sharex=True)
 
-        # Acelerômetro
+        # Acelerômetro - norma
         axes[0].plot(df_acc["Tempo"], df_acc["Norma_raw_interp"], alpha=0.4, label="Norma interpolada (bruta)")
         axes[0].plot(df_acc["Tempo"], df_acc["Norma"], linewidth=2, label="Norma filtrada (detrend + 2 Hz)")
         axes[0].set_ylabel("‖a‖")
         axes[0].set_title("Norma do Acelerômetro (100 Hz)")
         axes[0].legend()
 
-        # Giroscópio
-        axes[1].plot(df_gyro["Tempo"], df_gyro["Norma_raw_interp"], alpha=0.3, label="Norma interpolada (bruta)")
-        axes[1].plot(df_gyro["Tempo"], df_gyro["Norma"], linewidth=2, label="Norma filtrada (detrend + 2 Hz)")
+        # Acelerômetro - eixos Vert / ML
+        axes[1].plot(df_acc["Tempo"], df_acc["Vert"], label=f"Eixo vertical acc ({eixo_vertical}_filt)")
+        axes[1].plot(df_acc["Tempo"], df_acc["ML"], linestyle="--", label=f"Eixo médio-lateral acc ({eixo_ml}_filt)")
+        axes[1].set_ylabel("a (filtrado)")
+        axes[1].set_title("Componentes vertical e médio-lateral (acelerômetro)")
+        axes[1].legend()
+
+        # Giroscópio - norma
+        axes[2].plot(df_gyro["Tempo"], df_gyro["Norma_raw_interp"], alpha=0.3, label="Norma interpolada (bruta)")
+        axes[2].plot(df_gyro["Tempo"], df_gyro["Norma"], linewidth=2, label="Norma filtrada (detrend + 2 Hz)")
 
         # Marcar início/fim do movimento
         if tempo_inicio is not None:
-            axes[1].axvline(tempo_inicio, linestyle="--", linewidth=2,
+            axes[2].axvline(tempo_inicio, linestyle="--", linewidth=2,
                             label="Início do movimento")
         if tempo_fim is not None:
-            axes[1].axvline(tempo_fim, linestyle="--", linewidth=2,
+            axes[2].axvline(tempo_fim, linestyle="--", linewidth=2,
                             label="Fim do movimento")
 
         # Sombrear janela de movimento
         if (tempo_inicio is not None) and (tempo_fim is not None) and (tempo_fim > tempo_inicio):
-            axes[1].axvspan(tempo_inicio, tempo_fim, alpha=0.15, label="Janela de movimento")
+            axes[2].axvspan(tempo_inicio, tempo_fim, alpha=0.15, label="Janela de movimento")
 
         # Marcar e sombrear todos os transientes
         if len(transientes) > 0:
@@ -335,30 +380,38 @@ if arq_acc is not None and arq_gyro is not None:
                 t_ini = df_gyro["Tempo"].iloc[i_ini]
                 t_fim = df_gyro["Tempo"].iloc[i_fim]
 
-                # Linhas verticais
-                axes[1].axvline(t_ini, linestyle=":", linewidth=2,
+                axes[2].axvline(t_ini, linestyle=":", linewidth=2,
                                 label="Início transiente" if k == 1 else None)
-                axes[1].axvline(t_fim, linestyle=":", linewidth=2,
+                axes[2].axvline(t_fim, linestyle=":", linewidth=2,
                                 label="Fim transiente" if k == 1 else None)
 
-                # Sombreamento da janela do transiente
-                axes[1].axvspan(t_ini, t_fim, alpha=0.25,
+                axes[2].axvspan(t_ini, t_fim, alpha=0.25,
                                 label="Janela transiente" if k == 1 else None)
 
-        axes[1].set_ylabel("‖ω‖")
-        axes[1].set_xlabel("Tempo (s)")
-        axes[1].set_title("Norma do Giroscópio (100 Hz) + Movimento e Transientes")
-        axes[1].legend()
+        axes[2].set_ylabel("‖ω‖")
+        axes[2].set_title("Norma do Giroscópio (100 Hz) + Movimento e Transientes")
+        axes[2].legend()
+
+        # Giroscópio - eixos Vert_gyro / ML_gyro
+        axes[3].plot(df_gyro["Tempo"], df_gyro["Vert_gyro"], label=f"Eixo vertical gyro ({eixo_vertical}_filt)")
+        axes[3].plot(df_gyro["Tempo"], df_gyro["ML_gyro"], linestyle="--", label=f"Eixo médio-lateral gyro ({eixo_ml}_filt)")
+        axes[3].set_ylabel("ω (filtrado)")
+        axes[3].set_xlabel("Tempo (s)")
+        axes[3].set_title("Componentes vertical e médio-lateral (giroscópio)")
+        axes[3].legend()
 
         plt.tight_layout()
         st.pyplot(fig)
 
-        # Opcional: mostrar tabela resumida das classes
-        with st.expander("Ver primeiros valores e classes do giroscópio (já interpolado e filtrado)"):
-            st.dataframe(df_gyro[["Tempo", "Norma_raw_interp", "Norma", "Classe"]].head(200))
+        # Opcional: mostrar tabelas resumidas
+        with st.expander("Ver primeiros valores (gyro) e classes (já interpolado e filtrado)"):
+            st.dataframe(df_gyro[["Tempo", "X_filt", "Y_filt", "Vert_gyro", "ML_gyro", "Norma", "Classe"]].head(200))
+
+        with st.expander("Ver primeiros valores (acc) com Vert/ML"):
+            st.dataframe(df_acc[["Tempo", "X_filt", "Y_filt", "Vert", "ML", "Norma"]].head(200))
 
     except Exception as e:
         st.error(f"Erro ao processar arquivos: {e}")
 
 else:
-    st.info("Faça o upload dos dois arquivos para ver os gráficos e a detecção do movimento e transientes.")
+    st.info("Faça o upload dos dois arquivos para ver os gráficos, a orientação e a detecção do movimento/transientes.")
